@@ -38,6 +38,74 @@ interface ModelDialogProps {
   onClose: () => void;
 }
 
+async function fetchAvailableApiModels(
+  apiKey: string,
+  signal: AbortSignal,
+): Promise<Array<{ value: string; title: string; key: string }>> {
+  const results: Array<{ value: string; title: string; key: string }> = [];
+  let pageToken: string | undefined;
+
+  do {
+    const url = new URL(
+      'https://generativelanguage.googleapis.com/v1beta/models',
+    );
+    url.searchParams.set('pageSize', '1000');
+    if (pageToken) {
+      url.searchParams.set('pageToken', pageToken);
+    }
+
+    const res = await fetch(url.toString(), {
+      headers: { 'x-goog-api-key': apiKey },
+      signal,
+    });
+    if (!res.ok) {
+      break;
+    }
+
+    const raw: unknown = await res.json();
+    if (typeof raw !== 'object' || raw === null) {
+      break;
+    }
+    const rawModels: unknown[] =
+      'models' in raw && Array.isArray(raw.models) ? raw.models : [];
+
+    for (const item of rawModels) {
+      if (typeof item !== 'object' || item === null) continue;
+      const methods: unknown[] =
+        'supportedGenerationMethods' in item &&
+        Array.isArray(item.supportedGenerationMethods)
+          ? item.supportedGenerationMethods
+          : [];
+      if (!methods.includes('generateContent')) continue;
+      const rawName =
+        'name' in item && typeof item.name === 'string' ? item.name : '';
+      const id = rawName.replace(/^models\//, '');
+      if (!id || (!id.startsWith('gemini-') && !id.startsWith('gemma-'))) {
+        continue;
+      }
+      if (/(embedding|imagen|veo|lyria|-tts\b)/i.test(id)) {
+        continue;
+      }
+      const displayName =
+        'displayName' in item && typeof item.displayName === 'string'
+          ? item.displayName
+          : '';
+      results.push({
+        value: id,
+        title: displayName ? `${id} (${displayName})` : id,
+        key: id,
+      });
+    }
+
+    pageToken =
+      'nextPageToken' in raw && typeof raw.nextPageToken === 'string'
+        ? raw.nextPageToken
+        : undefined;
+  } while (pageToken);
+
+  return results;
+}
+
 export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
   const config = useContext(ConfigContext);
   const settings = useSettings();
@@ -49,6 +117,31 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
     config?.getProModelNoAccessSync() ? 'manual' : 'main',
   );
   const [persistMode, setPersistMode] = useState(false);
+  const [apiModels, setApiModels] = useState<
+    Array<{ value: string; title: string; key: string }>
+  >([]);
+
+  useEffect(() => {
+    const apiKey =
+      config?.getContentGeneratorConfig?.()?.apiKey ||
+      process.env['GEMINI_API_KEY'];
+    if (!apiKey) return;
+
+    const controller = new AbortController();
+    fetchAvailableApiModels(apiKey, controller.signal)
+      .then((models) => {
+        if (!controller.signal.aborted && models.length > 0) {
+          setApiModels(models);
+        }
+      })
+      .catch(() => {
+        // Fallback to built-in model list on network or abort errors.
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [config]);
 
   useEffect(() => {
     async function checkAccess() {
@@ -82,7 +175,10 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
         .getModelConfigService()
         .getModelDefinition(preferredModel);
       // Only treat as manual selection if it's a visible, non-auto model.
-      return def && def.tier !== 'auto' && def.isVisible === true
+      if (def && def.tier !== 'auto' && def.isVisible === true) {
+        return preferredModel;
+      }
+      return apiModels.some((m) => m.value === preferredModel)
         ? preferredModel
         : '';
     }
@@ -100,8 +196,11 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
     if (manualModels.includes(preferredModel)) {
       return preferredModel;
     }
+    if (apiModels.some((m) => m.value === preferredModel)) {
+      return preferredModel;
+    }
     return '';
-  }, [preferredModel, config]);
+  }, [preferredModel, config, apiModels]);
 
   useKeypress(
     (key) => {
@@ -215,7 +314,8 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
           value: o.modelId,
           title: o.name,
           key: o.modelId,
-        }));
+        }))
+        .concat(apiModels);
     }
 
     // --- LEGACY PATH ---
@@ -289,10 +389,12 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
 
     if (!hasAccessToProModel) {
       // Filter out all Pro models for free tier
-      return options.filter((option) => !isProModel(option.value));
+      return [...options, ...apiModels].filter(
+        (option) => !isProModel(option.value),
+      );
     }
 
-    return options;
+    return [...options, ...apiModels];
   }, [
     shouldShowPreviewModels,
     useGemini31,
@@ -301,6 +403,7 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
     useCustomToolModel,
     hasAccessToProModel,
     config,
+    apiModels,
   ]);
 
   const options = useMemo(() => {

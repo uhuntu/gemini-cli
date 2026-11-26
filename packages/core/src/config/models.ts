@@ -645,6 +645,7 @@ export function isCustomModel(
  */
 export function supportsModernFeatures(model: string): boolean {
   if (isGemini3Model(model)) return true;
+  if (/^gemini-([4-9]|\d{2,})(\.|-|$)/.test(model)) return true;
   return isCustomModel(model);
 }
 
@@ -694,7 +695,7 @@ export function supportsMultimodalFunctionResponse(
       return definition.features.multimodalToolUse;
     }
   }
-  return /^gemini-3(\.|-|$)/.test(resolved);
+  return /^gemini-([3-9]|\d{2,})(\.|-|$)/.test(resolved);
 }
 
 /**
