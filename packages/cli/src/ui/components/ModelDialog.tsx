@@ -27,6 +27,7 @@ import {
   PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL,
   isProModel,
   getAutoModelDescription,
+  fetchVertexGeminiModels,
 } from '@google/gemini-cli-core';
 import { useKeypress } from '../hooks/useKeypress.js';
 import { theme } from '../semantic-colors.js';
@@ -122,12 +123,30 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
   >([]);
 
   useEffect(() => {
+    const controller = new AbortController();
+
+    if (
+      config?.getContentGeneratorConfig?.()?.authType === AuthType.USE_VERTEX_AI
+    ) {
+      fetchVertexGeminiModels(controller.signal)
+        .then((models) => {
+          if (!controller.signal.aborted && models.length > 0) {
+            setApiModels(models);
+          }
+        })
+        .catch(() => {
+          // Fallback to built-in model list on errors.
+        });
+      return () => {
+        controller.abort();
+      };
+    }
+
     const apiKey =
       config?.getContentGeneratorConfig?.()?.apiKey ||
       process.env['GEMINI_API_KEY'];
     if (!apiKey) return;
 
-    const controller = new AbortController();
     fetchAvailableApiModels(apiKey, controller.signal)
       .then((models) => {
         if (!controller.signal.aborted && models.length > 0) {
